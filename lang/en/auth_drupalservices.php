@@ -67,3 +67,10 @@ $string['auth_drupalservicesupdateuser'] ='Updated user {$a}';
 
 $string['auth_drupalservices_logout_drupal_key'] = 'Log out of Drupal when Moodle Logout happens';
 $string['auth_drupalservices_logout_drupal'] = "This should normally be checked. If your drupal site is using the masquerade or devel switch user modules, you will want to disable this to allow for easier switching between users.";
+$string['createusers'] = 'Create users';
+$string['configcreateusers'] = 'Create users that exists in Drupal but not yet in the LMS';
+$string['pagesize'] = 'Page size';
+$string['configpagesize'] = 'Number of results for each time the index request is called. Be aware that there may be a max number set on Drupal\'s end';
+$string['pluginnotenabled'] = 'Plugin not enabled';
+
+$string['noaccount'] = 'You do not have an account to access the online learning platform - please contact APLS administrators if you believe this is in error.';

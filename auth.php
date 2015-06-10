@@ -12,10 +12,10 @@
  * PHP version 5
  *
  * @category CategoryName
- * @package  Drupal_Services 
+ * @package  Drupal_Services
  * @author   Dave Cannon <dave@baljarra.com>
  * @license  http://www.gnu.org/copyleft/gpl.html GNU Public License
- * @link     https://github.com/cannod/moodle-drupalservices 
+ * @link     https://github.com/cannod/moodle-drupalservices
  *
  */
 // This must be accessed from a Moodle page only!
@@ -50,8 +50,8 @@ class auth_plugin_drupalservices extends auth_plugin_base
     /**
      * This plugin is for SSO only; Drupal handles the login
      *
-     * @param string $username the username 
-     * @param string $password the password 
+     * @param string $username the username
+     * @param string $password the password
      *
      * @return int return FALSE
      */
@@ -69,10 +69,17 @@ class auth_plugin_drupalservices extends auth_plugin_base
     function loginpage_hook()
     {
         global $CFG, $USER, $SESSION, $DB;
+
+        //stop drupal login for Admin login
+        $nodrupal = optional_param('auth','drupal',PARAM_RAW);
+        $username = optional_param('username',false,PARAM_RAW);
+        if ($nodrupal == 'nodrupal') {
+            return;
+        }
+
         // Check if we have a Drupal session.
         $drupalsession = $this->get_drupal_session();
         if ($drupalsession == null) {
-          debugging("No drupal session detected, sending to drupal for login.", DEBUG_DEVELOPER);
             // redirect to drupal login page with destination
             if (isset($SESSION->wantsurl) and (strpos($SESSION->wantsurl, $CFG->wwwroot) == 0)) {
                 // the URL is set and within Moodle's environment
@@ -84,10 +91,12 @@ class auth_plugin_drupalservices extends auth_plugin_base
                     $args = '?' . $args;
                 }
                 // FIX so not hard coded.
-                redirect($this->config->host_uri . "/user/login?moodle_url=true&destination=" . $path . $args);
+                redirect($this->config->host_uri . '/user/login?destination=' . $path . $args);
+            } else if (!$username) {
+                redirect($this->config->host_uri . '/user/login'); // just send user to Drupal login page
+            } else {
+                return;
             }
-            return; // just send user to login page
-            
         }
         // Verify the authenticity of the Drupal session ID
         // Create JSON cookie used to connect to drupal services.
@@ -106,10 +115,13 @@ class auth_plugin_drupalservices extends auth_plugin_base
             }
             return;
         }
-        debugging("<pre>Live session detected the user returned is\r\n".print_r($ret,true)."</pre>", DEBUG_DEVELOPER);
         $uid = $ret->user->uid;
         if ($uid < 1) { //No anon
-            return;
+            if($drupalsession == null) {
+                //nodrupal
+                return;
+            }
+            redirect($this->config->host_uri . '/user/login');
         }
         // The Drupal session is valid; now check if Moodle is logged in...
         if (isloggedin() && !isguestuser()) {
@@ -117,25 +129,33 @@ class auth_plugin_drupalservices extends auth_plugin_base
         }
 
         $drupaluser = $apiObj->Index("user/{$uid}");
-        debugging("<pre>The full user data about this user is:\r\n".print_r($drupaluser,true)."</pre>",DEBUG_DEVELOPER);
         //create/update looks up the user and writes updated information to the DB
-        $this->create_update_user($drupaluser);
+        $exists = $this->create_update_user($drupaluser);
 
-        $user = get_complete_user_data('idnumber', $uid);
-debugging("<pre>the user that should have been created or updated is:\r\n".print_r($user,true)."</pre>",DEBUG_DEVELOPER);
-        // Complete the login
-        complete_user_login($user);
-        // redirect
-        if (isset($SESSION->wantsurl) and (strpos($SESSION->wantsurl, $CFG->wwwroot) == 0)) {
-            // the URL is set and within Moodle's environment
-            $urltogo = $SESSION->wantsurl;
-            unset($SESSION->wantsurl);
+        if ($exists) {
+            $user = get_complete_user_data('idnumber', $uid);
+
+            // Complete the login
+            complete_user_login($user);
+            // redirect
+            if (isset($SESSION->wantsurl) and (strpos($SESSION->wantsurl, $CFG->wwwroot) == 0)) {
+                // the URL is set and within Moodle's environment
+                $urltogo = $SESSION->wantsurl;
+                unset($SESSION->wantsurl);
+            } else {
+                // no wantsurl stored or external link. Go to homepage.
+                $urltogo = $CFG->wwwroot . '/';
+                unset($SESSION->wantsurl);
+            }
+            redirect($urltogo);
         } else {
-            // no wantsurl stored or external link. Go to homepage.
-            $urltogo = $CFG->wwwroot . '/';
-            unset($SESSION->wantsurl);
+            $user = get_complete_user_data('username', $username);
+            if($user) {
+                complete_user_login($user);
+            } else {
+                print_error('noaccount', 'auth_drupalservices');
+            }
         }
-        redirect($urltogo);
     }
 
   /**
@@ -144,7 +164,8 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
    */
     function cron(){
 
-      $this->sync_users(true);
+      //sync using cli script
+      //$this->sync_users(true);
     }
 
     /**
@@ -154,7 +175,7 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
      *
      * @param array $drupal_user the Drupal user array.
      *
-     * @return array Moodle user 
+     * @return array Moodle user
      */
     function create_update_user($drupal_user)
     {
@@ -163,7 +184,7 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
         $uid = $drupal_user->uid;
         // Look for user with idnumber = uid instead of using usernames as
         // drupal username might have changed.
-        $user = $DB->get_record('user', array('idnumber' => $uid, 'mnethostid' => $CFG->mnet_localhost_id));
+        $user = $DB->get_record_select('user', "idnumber = :idnumber AND mnethostid = :mnethostid AND auth IN ('drupalservices', 'nologin')", array('idnumber' => $uid, 'mnethostid' => $CFG->mnet_localhost_id));
 
         if (empty($user)) {
           // build the new user object to be put into the Moodle database
@@ -204,12 +225,16 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
           $user->country=substr($user->country, 0, 2);
         }
 
-        if(!$user->id){
-            // add the new Drupal user to Moodle
-            $uid = $DB->insert_record('user', $user);
-            $user = $DB->get_record('user', array('username' => $user->username, 'mnethostid' => $CFG->mnet_localhost_id));
-            if (!$user) {
-                print_error('auth_drupalservicescantinsert', 'auth_db', $user->username);
+        if(empty($user->id)){
+            if (get_config('auth_drupalservices', 'createuser')) {
+                // add the new Drupal user to Moodle
+                $user->id = $DB->insert_record('user', $user);
+                $user = $DB->get_record('user', array('username' => $user->username, 'mnethostid' => $CFG->mnet_localhost_id));
+                if (!$user) {
+                    print_error('auth_drupalservicescantinsert', 'auth_db', $user->username);
+                }
+            } else {
+                return false;
             }
         } else {
             // Update user information
@@ -223,7 +248,7 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
     /**
      * Run before logout
      *
-     * @return int TRUE if valid session. 
+     * @return int TRUE if valid session.
      */
     function logoutpage_hook()
     {
@@ -231,13 +256,16 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
         $base_url = $this->config->host_uri;
         if ($drupalsession=$this->get_drupal_session() ) {
           if ($this->config->call_logout_service) {
-            //die("trying to log out");
             // logout of drupal.
             $apiObj = new RemoteAPI($base_url, 1, $drupalsession);
             $ret = $apiObj->Logout();
             if (is_null($ret)) {
               return;
             } else {
+              //delete old cookie
+
+              unset($_COOKIE[$drupalsession['session_name']]);
+              setcookie($drupalsession['session_name'], '', 1);
               return true;
             }
           }
@@ -249,11 +277,15 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
      *
      * @param int $do_updates true to update existing accounts
      *
-     * @return int       
+     * @return int
      */
     function sync_users($do_updates = false)
     {
         global $CFG, $DB;
+
+        $DB->execute('SET SESSION wait_timeout=10000');
+
+
         // process users in Moodle that no longer exist in Drupal
         $remote_user = $this->config->remote_user;
         $remote_pw = $this->config->remote_pw;
@@ -275,11 +307,20 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
           die($error);
         }
         // list external users since last update
-        $vid=isset($this->config->last_vid)?$this->config->last_vid:0;
-        $pagesize=$this->config->pagesize;
-        $page=0;
+        $vid=0;
 
-        $drupal_users = $apiObj->Index('user',"?vid={$vid},page={$page},pagesize={$pagesize}");
+        //page size must be atleast 1
+        $pagesize= $this->config->pagesize ? $this->config->pagesize : 1;
+        $page=0;
+        $drupal_users = array();
+
+        do {
+            $retrieved = $apiObj->Index('user',"?vid={$vid}&page={$page}&pagesize={$pagesize}");
+            $drupal_users = array_merge($drupal_users, $retrieved);
+            $page += 1;
+
+        } while (!empty($retrieved));
+
         if (is_null($drupal_users) || empty($drupal_users)) {
             die("ERROR: Problems trying to get index of users!\n");
         }
@@ -295,25 +336,27 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
             // either the user requesting, or a user with administer users permission.
             // luckily the updates service has the value, so we have to copy it over.
             $drupal_user->mail=$drupal_user_info->mail;
-            if ($drupal_user_info->uid < 1) { //No anon
+            if ($drupal_user_info->uid < 1 || $drupal_user->name == 'admin') { //No anon or admin
                 print "Skipping anon user - uid {$drupal_user->uid}\n";
                 continue;
             }
-            print_string('auth_drupalservicesupdateuser', 'auth_drupalservices', array($drupal_user->name . '(' . $drupal_user->uid . ')'));
+            print_string('auth_drupalservicesupdateuser', 'auth_drupalservices', $drupal_user->name . '(' . $drupal_user->uid . ")\n");
             $user = $this->create_update_user($drupal_user);
             if (empty($user)) {
-                // Something went wrong while creating the user
-                print_error('auth_drupalservicescreateaccount', 'auth_drupalservices', array($drupal_user->name));
+                if(get_config('auth_drupalservices', 'createuser')) {
+                    // Something went wrong while creating the user
+                    print_error('auth_drupalservicescreateaccount', 'auth_drupalservices', array($drupal_user->name));
+                }
                 continue; //Next user
             }
         }
         // now that all the latest updates have been imported, store the revision point we are at.
-        set_config('last_vid',$drupal_user->vid,'auth_drupalservices');
+        //set_config('last_vid',$drupal_user->vid,'auth_drupalservices');
         // Now do cohorts
         if ($this->config->cohorts != 0) {
             $cohort_view = $this->config->cohort_view;
             print "Updating cohorts using services view - $cohort_view\n";
-            $context = context_system::instance();
+            $context = get_context_instance(CONTEXT_SYSTEM);
             //$processed_cohorts_list = array();
             $drupal_cohorts = $apiObj->Index($cohort_view);
             if (is_null($drupal_cohorts)) {
@@ -323,7 +366,7 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
                 foreach ($drupal_cohorts as $drupal_cohort) {
                     if ($drupal_cohort->cohort_name == '') {
                         continue; // We don't want an empty cohort name
-                        
+
                     }
                     $drupal_cohort_list[] = $drupal_cohort->cohort_name;
                     if (!$this->cohort_exists($drupal_cohort->cohort_name)) {
@@ -396,7 +439,7 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
     /**
      * Processes and stores configuration data for this authentication plugin.
      *
-     * @param array $config main config 
+     * @param array $config main config
      *
      * @return int TRUE
      */
@@ -460,7 +503,7 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
     /**
      * Check if cohort exists. return true if so.
      *
-     * @param string $drupal_cohort_name name of drupal cohort 
+     * @param string $drupal_cohort_name name of drupal cohort
      *
      * @return int TRUE
      */
@@ -482,7 +525,7 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
     /**
      * return list of cohorts
      *
-     * @return array moodle cohorts 
+     * @return array moodle cohorts
      */
     function moodle_cohorts()
     {
@@ -500,9 +543,9 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
      * Return an array of cohorts this uid is in.
      *
      * @param int   $uid            The drupal UID
-     * @param array $drupal_cohorts All drupal cohorts 
+     * @param array $drupal_cohorts All drupal cohorts
      *
-     * @return array cohorts for this user 
+     * @return array cohorts for this user
      */
     function drupal_user_cohorts($uid, $drupal_cohorts)
     {
@@ -518,7 +561,7 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
     /**
      * Return an array of moodle cohorts this user is in.
      *
-     * @param array $user Moodle user 
+     * @param array $user Moodle user
      *
      * @return array cohorts for this user
      */
@@ -530,23 +573,16 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
         return $user_cohorts;
     }
     /**
-     * Get Drupal session 
+     * Get Drupal session
      *
      * @param string $base_url This base URL
      *
-     * @return array session_name and session_id 
+     * @return array session_name and session_id
      */
     function get_drupal_session($cfg=null)
     {
       if(!$cfg) {
         $cfg = get_config('auth_drupalservices');
-        if(!$cfg->cookiedomain){
-          //something went really wrong, try and re detect the session cookie and save it
-          $settings=$this->detect_sso_settings($cfg->host_uri);
-          set_config('cookiedomain',$settings['cookiedomain'],'auth_drupalservices');
-          $cfg->cookiedomain=$settings['cookiedomain'];
-        }
-        debugging("<pre>loaded saved session settings config:".print_r(array('host'=>$cfg->host_uri, 'cookie domain'=>$cfg->cookiedomain),true)."</pre>", DEBUG_DEVELOPER);
       }
 
       // Otherwise use $base_url as session name, without the protocol
@@ -618,31 +654,26 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
 
   /**
    * @param $cookiebydomain
-   * detecting the sso cookie is the hard part because we need to check all of the valid subdomains against
-   * all of the subdirectories till a match is found. Here's an example and how it will be scanned:
-   *
-   * example full path: http://moodle.intranet.example.com/example/drupal/drupalsso
-   *
-   * moodle.intranet.example.com/example/drupal/drupalsso
-   *  moodle.intranet.example.com/example/drupal
-   *  moodle.intranet.example.com/example
-   *  .intranet.example.com/example/drupal/drupalsso
-   *  .intranet.example.com/example/drupal
-   *  .intranet.example.com/example
-   *  .intranet.example.com
-   *  .example.com/example/drupal/drupalsso
-   *  .example.com/example/drupal
-   *  .example.com/example
-   *  .example.com
-   *
-   * if/when a match is found the proper settings will be saved and used. if not, a message will be displayed
-   *
-   * use a do/while because each of the loops need to run at least one time.
-   *
-   * this needs to also be able to detect a path/domain disparity such as:
-   * path:    example.com/drupal
-   * cookie:  .example.com
-   *
+   detecting the sso cookie is the hard part because we need to check all of the valid subdomains against
+   all of the subdirectories till a match is found. Here's an example and how it will be scanned:
+
+   example full path: http://moodle.intranet.example.com/example/drupal/drupalsso
+
+   moodle.intranet.example.com/example/drupal/drupalsso
+   moodle.intranet.example.com/example/drupal
+   moodle.intranet.example.com/example
+   .intranet.example.com/example/drupal/drupalsso
+   .intranet.example.com/example/drupal
+   .intranet.example.com/example
+   .intranet.example.com
+   .example.com/example/drupal/drupalsso
+   .example.com/example/drupal
+   .example.com/example
+   .example.com
+
+   if/when a match is found the proper settings will be saved and used. if not, a message will be displayed
+
+   use a do/while because each of the loops need to run at least one time.
 */
 
   function detect_sso_settings($cookiebydomain){
@@ -685,7 +716,7 @@ debugging("<pre>the user that should have been created or updated is:\r\n".print
 // if the right cookie domain setting was discovered, set it to the proper config variable
 
     if($sso_config_discovered){
-      $config['host_uri']=$cookiebypath;
+      $config['host_uri']=$cookiebydomain;
       $config['cookiedomain']=$testconfig->cookiedomain;
       return $config;
     }
