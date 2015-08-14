@@ -59,7 +59,7 @@ $drupalauth= get_auth_plugin('drupalservices');
  * this could then be used during first time configuration and automate the settings better.
 **/
 
-if ($PAGE->url->compare(new moodle_url('/admin/settings.php', array('section'=>'authsettingdrupalservices')), URL_MATCH_PARAMS)) {
+if (!defined(CLI_SCRIPT) && $PAGE->url->compare(new moodle_url('/admin/settings.php', array('section'=>'authsettingdrupalservices')), URL_MATCH_PARAMS)) {
 
     // define default settings:
     $defaults=array(
